@@ -172,7 +172,7 @@ class DogsDataset(Dataset):
 *   `Normalization`: Math trick. Neural networks learn faster when input numbers are small (near 0) and standard (std dev 1). We use ImageNet statistics.
 
 ```python
-image_size = 160 # Reduced from 224 for speed, standard ResNet is 224
+image_size = 224 # Standard ResNet input size for optimal details
 stats = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
 # Training gets augmentation (Harder for model = Better learning)
@@ -183,10 +183,10 @@ train_tf = T.Compose([
     T.Normalize(*stats)
 ])
 
-# Validation/Test gets standard resizing (We want a fair test)
+# Validation/Test gets standard resizing (Determinism gives stable metrics)
 eval_tf = T.Compose([
-    T.Resize(int(image_size * 1.14)),
-    T.CenterCrop(image_size),
+    T.Resize(int(image_size * 1.14)), # Resize slightly larger...
+    T.CenterCrop(image_size),         # ...then crop the center.
     T.ToTensor(),
     T.Normalize(*stats)
 ])
@@ -224,13 +224,18 @@ model.fc = nn.Linear(model.fc.in_features, num_classes)
 model = model.to(device) # Move entire model to GPU/CPU
 ```
 
-### Step 6: Training Configuration
+### Step 6: Training Configuration & Scheduler
 *   **Loss Function**: `CrossEntropyLoss` (Standard for multi-class classification).
-*   **Optimizer**: `AdamW`. A smarter version of Stochastic Gradient Descent. It adapts learning rates per-parameter.
+*   **Optimizer**: `AdamW`. A smarter version of Stochastic Gradient Descent.
+*   **Scheduler**: `ReduceLROnPlateau`. Monitors accuracy; if progress stalls (plateaus), it reduces the learning rate to help the model find a deeper minimum.
 
 ```python
 loss_fn = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4) # 3e-4 is a "Karpathy Constant" (very safe learning rate)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+
+# "Patience=2": If accuracy doesn't improve for 2 epochs...
+# "Factor=0.1": ...cut the learning rate by 10x (e.g., 3e-4 -> 3e-5)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.1, verbose=True)
 ```
 
 ### Step 7: The Training Loop
@@ -267,20 +272,27 @@ def test_loop(dataloader, model, loss_fn):
     return correct / len(dataloader.dataset)
 
 # Run it
-for t in range(10): # 10 Epochs
+acc = 0.0
+for t in range(15): # Increased to 15 Epochs
     print(f"Epoch {t+1}")
     train_loop(train_loader, model, loss_fn, optimizer)
-    test_loop(val_loader, model, loss_fn)
+    acc = test_loop(val_loader, model, loss_fn)
+    
+    # Update the Learning Rate based on Accuracy
+    scheduler.step(acc)
+
+print("Done Training!")
 ```
 
-### Step 8: Saving
-Crucial Step: We not only save the model weights (`state_dict`) but also the `class_to_idx` map. Without the map, you have a model that tells you "It's class #42" but you won't know if #42 is a Pug or a Husky.
+### Step 8: Saving with Metadata
+Crucial Step: We not only save the model weights (`state_dict`) but also the `class_to_idx` map.
+We also include the final accuracy in the filename so we don't accidentally overwrite a good model with a bad one.
 
 ```python
 torch.save({
     "state_dict": model.state_dict(),
     "class_to_idx": train_ds.class_to_idx
-}, "resnet18_dogs_cpu.pth")
+}, f"resnet18_dogs_cpu_{acc*100:.1f}.pth")
 ```
 
 ---
