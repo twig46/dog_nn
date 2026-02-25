@@ -1,6 +1,6 @@
 # Deep Learning with PyTorch: Transfer Learning on Dog Breeds
 
-This document serves as a comprehensive guide to understanding and recreating the Convolutional Neural Network (CNN) implementation found in `test.ipynb`. It focuses on pragmatic Deep Learning concepts using PyTorch, specifically **Transfer Learning** with a ResNet18 architecture.
+This document serves as a comprehensive guide to understanding and recreating the Convolutional Neural Network (CNN) implementation found in `nn.ipynb`. It focuses on pragmatic Deep Learning concepts using PyTorch, specifically **Transfer Learning** with a ResNet18 architecture.
 
 ---
 
@@ -97,9 +97,9 @@ BatchNorm forces the input to every layer to be mathematically consistent, regar
 
 ---
 
-## 3. Step-by-Step Guide to Creating `test.ipynb`
+## 3. Step-by-Step Guide to Creating `nn.ipynb`
 
-This section breaks down `test.ipynb` logically, explaining how to reconstruct it from scratch.
+This section breaks down `nn.ipynb` logically, explaining how to reconstruct it from scratch.
 
 ### Step 1: Imports and Setup
 We need standard libraries for file handling and PyTorch for deep learning.
@@ -134,33 +134,61 @@ print(f"Using {device}")
 
 ```python
 class DogsDataset(Dataset):
-    def __init__(self, jsonl_path, transform=None, class_to_idx=None):
-        self.path = Path(jsonl_path)
+    def __init__(
+        self,
+        root: str | Path,
+        split: str,
+        transform=None,
+        class_to_idx: dict[str, int] | None = None,
+    ):
+        self.root = Path(root)
+        self.split = split
         self.transform = transform
-        # Load JSONL
-        with self.path.open() as f:
-            self.items = [json.loads(line) for line in f if line.strip()]
 
-        # Create or assign Class Mapping
+        # Annotation files live in data/annotation/{train,test}.json
+        ann_path = self.root / "annotation" / f"{split}.json"
+        cat_path = self.root / "annotation" / "category.json"
+
+        with ann_path.open("r", encoding="utf-8") as f:
+            ann = json.load(f)
+
+        # Current Dogs-in-the-Wild layout: dict with an "annotations" list
+        annotations = ann["annotations"]
+
+        # Load category mapping for label name -> id
+        with cat_path.open("r", encoding="utf-8") as f:
+            cat_data = json.load(f)
+        categories = cat_data["categories"]
+
         if class_to_idx is None:
-            # Sort to ensure deterministic order (Beagle=0, Poodle=1...)
-            classes = sorted({x["class_name"] for x in self.items})
-            self.class_to_idx = {c: i for i, c in enumerate(classes)}
+            # Use dataset ids directly; assume they are 0..N-1
+            self.class_to_idx = {
+                c["category name"]: int(c["category id"])
+                for c in categories
+            }
         else:
             self.class_to_idx = class_to_idx
-            
+
+        # Materialize (image_path, label_id) pairs for __getitem__
+        self.items: list[tuple[Path, int]] = []
+        for a in annotations:
+            # e.g. "image/train/xxx.jpg" or "image/test/xxx.jpg"
+            img_rel = a["name"]
+            cat_id = int(a.get("category id") or a.get("category_id"))
+            img_path = self.root / img_rel
+            self.items.append((img_path, cat_id))
+
     def __len__(self):
         return len(self.items)
 
     def __getitem__(self, idx):
-        item = self.items[idx]
+        img_path, label = self.items[idx]
         # Important: Convert to RGB to handle grayscale/RGBA images correctly
-        img = Image.open(item["image"]).convert("RGB")
-        label = self.class_to_idx[item["class_name"]]
-        
+        img = Image.open(img_path).convert("RGB")
+
         if self.transform:
             img = self.transform(img)
-            
+
         return img, label
 ```
 
@@ -198,10 +226,12 @@ Instantiate the datasets and wrap them in `DataLoader`. The DataLoader handles:
 *   **Shuffling**: Mixing data so the model doesn't memorize the order (Training only).
 
 ```python
-train_ds = DogsDataset("data/splits/dogs_train.jsonl", transform=train_tf)
-# Use train_ds.class_to_idx for others to ensure Schema Consistency (Label 0 is always the same breed)
-val_ds = DogsDataset("data/splits/dogs_val.jsonl", transform=eval_tf, class_to_idx=train_ds.class_to_idx)
-test_ds = DogsDataset("data/splits/dogs_test.jsonl", transform=eval_tf, class_to_idx=train_ds.class_to_idx)
+data_root = "data"
+
+train_ds = DogsDataset(data_root, "train", transform=train_tf)
+# For now, reuse the test split as validation
+val_ds = DogsDataset(data_root, "test", transform=eval_tf, class_to_idx=train_ds.class_to_idx)
+test_ds = val_ds
 
 train_loader = DataLoader(train_ds, batch_size=16, shuffle=True)
 val_loader = DataLoader(val_ds, batch_size=16, shuffle=False)
